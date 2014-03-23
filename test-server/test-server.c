@@ -58,7 +58,8 @@ int max_poll_elements;
 struct pollfd *pollfds;
 int *fd_lookup;
 int count_pollfds;
-int force_exit = 0;
+static volatile int force_exit = 0;
+static struct libwebsocket_context *context;
 
 /*
  * This demo server shows how to use libwebsockets for one or more
@@ -211,7 +212,7 @@ static int callback_http(struct libwebsocket_context *context,
 			(struct per_session_data__http *)user;
 	const char *mimetype;
 #ifdef EXTERNAL_POLL
-	int fd = (int)(long)in;
+	struct libwebsocket_pollargs *pa = (struct libwebsocket_pollargs *)in;
 #endif
 
 	switch (reason) {
@@ -450,28 +451,25 @@ bail:
 			return 1;
 		}
 
-		fd_lookup[fd] = count_pollfds;
-		pollfds[count_pollfds].fd = fd;
-		pollfds[count_pollfds].events = (int)(long)len;
+		fd_lookup[pa->fd] = count_pollfds;
+		pollfds[count_pollfds].fd = pa->fd;
+		pollfds[count_pollfds].events = pa->events;
 		pollfds[count_pollfds++].revents = 0;
 		break;
 
 	case LWS_CALLBACK_DEL_POLL_FD:
 		if (!--count_pollfds)
 			break;
-		m = fd_lookup[fd];
+		m = fd_lookup[pa->fd];
 		/* have the last guy take up the vacant slot */
 		pollfds[m] = pollfds[count_pollfds];
 		fd_lookup[pollfds[count_pollfds].fd] = m;
 		break;
 
-	case LWS_CALLBACK_SET_MODE_POLL_FD:
-		pollfds[fd_lookup[fd]].events |= (int)(long)len;
+	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
+	        pollfds[fd_lookup[pa->fd]].events = pa->events;
 		break;
 
-	case LWS_CALLBACK_CLEAR_MODE_POLL_FD:
-		pollfds[fd_lookup[fd]].events &= ~(int)(long)len;
-		break;
 #endif
 
 	case LWS_CALLBACK_GET_THREAD_ID:
@@ -479,8 +477,7 @@ bail:
 		 * if you will call "libwebsocket_callback_on_writable"
 		 * from a different thread, return the caller thread ID
 		 * here so lws can use this information to work out if it
-		 * should signal the ppoll() loop to exit and restart early
-		 * (only applies if the library has LWS_HAS_PPOLL
+		 * should signal the poll() loop to exit and restart early
 		 */
 
 		/* return pthread_getthreadid_np(); */
@@ -735,6 +732,7 @@ static struct libwebsocket_protocols protocols[] = {
 void sighandler(int sig)
 {
 	force_exit = 1;
+	libwebsocket_cancel_service(context);
 }
 
 static struct option options[] = {
@@ -758,7 +756,6 @@ int main(int argc, char **argv)
 	char key_path[1024];
 	int n = 0;
 	int use_ssl = 0;
-	struct libwebsocket_context *context;
 	int opts = 0;
 	char interface_name[128] = "";
 	const char *iface = NULL;
